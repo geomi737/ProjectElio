@@ -1,24 +1,23 @@
 import json
 from typing import override
 import torch
-from transformer import context, eot_token
+from traintokenizer import eot_token, user_text_token, answer_token
 from torch.utils.data import Dataset, DataLoader
-from tokenizers import Tokenizer
-from trainhandler import Model
+from architecture import ModelConfig, Transformer
+from trainhandler import Trainer
 
 class TextDataset(Dataset):
-    def __init__(self, json_path: str, context: int) -> None:
+    def __init__(self, dataset: list[str], context: int) -> None:
         super().__init__()
         self.context = context
-        with open(json_path, "r") as f:
-            self.dataset = [json.loads(x) for x in f]
-            for dic in self.dataset:
-                dic["input"] = tokenizer.encode(dic["instruction"] + (" " if dic["input"] else "") + dic["input"] + eot_token).ids
-                dic["output"] = tokenizer.encode(dic["alternative_output"] + eot_token).ids
-            self.dataset = list(filter(lambda x: len(x["input"] + x["output"]) <= self.context, self.dataset))
-            self.biggest_pad = max(self.dataset, key=lambda x: len(x["input"] + x["output"]))
-            self.biggest_pad = len(self.biggest_pad["input"] + self.biggest_pad["output"])
-            self.pad_token = tokenizer.encode(eot_token).ids
+        self.dataset = [json.loads(x) for x in dataset]
+        for dic in self.dataset:
+            dic["input"] = tokenizer.encode(user_text_token + dic["instruction"] + ("\n" if dic["input"] else "") + dic["input"] + answer_token).ids
+            dic["output"] = tokenizer.encode((dic.get("alternative_output", False) or dic["output"]) + eot_token).ids
+        self.dataset = list(filter(lambda x: len(x["input"] + x["output"]) <= self.context, self.dataset))
+        self.biggest_pad = max(self.dataset, key=lambda x: len(x["input"] + x["output"]))
+        self.biggest_pad = len(self.biggest_pad["input"] + self.biggest_pad["output"])
+        self.pad_token = tokenizer.encode(eot_token).ids
 
     @override
     def __getitem__(self, index):
@@ -35,27 +34,49 @@ class TextDataset(Dataset):
         return len(self.dataset)
 
 # Parameters
-model = "Elio-2.5Instruct"
-from_model = "Elio-2.5R"
-model_path = f"./models/{model}.pth"
-from_model_path = f"./models/{from_model}.pth"
-dataset_path = "dataset/ru_turbo_alpaca.jsonl"
-tokenizer_path = "tokenizer.json"
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-tokenizer = Tokenizer.from_file(tokenizer_path)
-vocab_size = tokenizer.get_vocab_size()
+model_name = "Elio-1.1I"
+from_model = "Elio-1.1R"
+
+dataset_path = "dataset/ru_turbo_alpaca.jsonl"
+with open(dataset_path, "r") as d:
+    dataset = d.readlines()
+explit_pct = 0.9
+train_dataset = dataset[:int(len(dataset) * explit_pct)]
+val_dataset = dataset[int(len(dataset) * explit_pct):]
 
 batch = 3
-epochs = 5
-
+epochs = 9
 learning_rate = 3e-5
 weight_decay = 1e-2
 accumulation = 16
+pct_start = 0.05
 
-dataloader = DataLoader(TextDataset(dataset_path, context), batch, shuffle=True)
+# Model Parameters
+context = 256
 
-model = Model(model_path, dataloader, learning_rate, weight_decay, batch, accumulation, epochs, from_model_path)
+modelconf = ModelConfig(from_model).load_model_layout()
+modelconf.save_model_layout(to_model=model_name)
+model = Transformer(model_name, modelconf.get_settings(), device, tokenizer_path="tokenizer.json", tokenizer_into_model_folder=True).to(device)
+tokenizer = model.get_tokenizer()
 
-model.train()
+# Training sequence
+training_dataloader = DataLoader(TextDataset(train_dataset, context), batch, shuffle=True)
+validation_dataloader = DataLoader(TextDataset(val_dataset, context), batch, shuffle=True)
+
+trainer = Trainer(
+    model_name=model_name,
+    model=model,
+    training_dataloader=training_dataloader,
+    validation_dataloader=validation_dataloader,
+    learning_rate=learning_rate,
+    weight_decay=weight_decay,
+    pct_start=pct_start,
+    batch=batch,
+    accumulation=accumulation,
+    epochs=epochs,
+    from_model=from_model
+)
+
+trainer.train()

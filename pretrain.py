@@ -1,13 +1,17 @@
 from typing import override
-from transformer import context
+import torch
 from torch.utils.data import Dataset, DataLoader
-from trainhandler import Model
+from trainhandler import Trainer
+from architecture import ModelConfig, Transformer
 import numpy as np
 
+from traintokenizer import eot_token
+
+
 class TextDataset(Dataset):
-    def __init__(self, json_path: str, context: int) -> None:
+    def __init__(self, dataset: np.ndarray, context: int) -> None:
         super().__init__()
-        self.dataset = np.memmap(json_path, dtype=np.uint16, mode="r+")
+        self.dataset = dataset
         self.context = context
             
     @override
@@ -18,18 +22,52 @@ class TextDataset(Dataset):
         return len(self.dataset) // self.context - 1
 
 # Parameters
-model = "Elio-2.5R"
-model_path = f"./models/{model}.pth"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+model_name = "Elio-1.0R"
+
 dataset_path = "dataset/f-t-32k_ru_wikipedia.dtst"
+dataset = np.memmap(dataset_path, dtype=np.uint16, mode="r+")
+explit_pct = 0.9
+train_dataset = dataset[:int(len(dataset) * explit_pct)]
+val_dataset = dataset[int(len(dataset) * explit_pct):]
 
-batch = 3
+batch = 128
 epochs = 5
-
-learning_rate = 1e-4
+learning_rate = 5e-4
 weight_decay = 1e-2
-accumulation = 16
+accumulation = 1
+pct_start = 0.05
 
-dataloader = DataLoader(TextDataset(dataset_path, context), batch, shuffle=True)
+# Model Parameters
+context = 256
 
-model = Model(model_path, dataloader, learning_rate, weight_decay, batch, accumulation, epochs)
-model.train()
+modelconf = ModelConfig(model_name).create_new(
+    eot_token=eot_token,
+    dropout=0.1,
+    context=context,
+    embed_dims=64,
+    attention_heads=1,
+    n_blocks=1,
+)
+modelconf.save_model_layout()
+model = Transformer(model_name, modelconf.get_settings(), device, tokenizer_path="tokenizer.json", tokenizer_into_model_folder=True).to(device)
+
+# Training sequence
+training_dataloader = DataLoader(TextDataset(train_dataset, context), batch, shuffle=True)
+validation_dataloader = DataLoader(TextDataset(val_dataset, context), batch, shuffle=True)
+
+trainer = Trainer(
+    model_name=model_name,
+    model=model,
+    training_dataloader=training_dataloader,
+    validation_dataloader=validation_dataloader,
+    learning_rate=learning_rate,
+    weight_decay=weight_decay,
+    pct_start=pct_start,
+    batch=batch,
+    accumulation=accumulation,
+    epochs=epochs
+)
+
+trainer.train()

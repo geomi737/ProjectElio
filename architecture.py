@@ -7,6 +7,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from collections import deque
+import shutil
 
 @dataclass
 class InnerConf:
@@ -26,7 +27,6 @@ class InnerConf:
 class ModelConfig:
     def __init__(self, model):
         self.model_path = f"./models/{model}"
-        self.modelwb_path = self.model_path + f"/{model}.pth"
         self.layout_path = self.model_path + f"/{model}-layout.json"
     
     def create_new(self, eot_token, dropout, context, embed_dims, attention_heads, n_blocks, temperature = 1.0, top_k = None, top_p = None, repeat_penalty = 1.0, repetition_n = 10):
@@ -58,12 +58,14 @@ class ModelConfig:
 
         return self
 
-    def save_model_layout(self):
+    def save_model_layout(self, to_model: str | None = None):
+        if to_model:
+            self.layout_path = f"./models/{to_model}/{to_model}-layout.json"
         if not self.inner_conf:
             print("No model data found, skip saving...")
             return False
         if not os.path.exists(self.model_path):
-            os.mkdir(self.model_path)
+            os.makedirs(self.model_path, exist_ok=True)
         if os.path.exists(self.layout_path):
             print("Layout already exists, skip saving...")
             return False
@@ -72,7 +74,7 @@ class ModelConfig:
         
         return self
 
-    def change_generative_params(self, temperature = 1, top_k = None, top_p = None, repeat_penalty = 1.0, repetition_n = 10):
+    def change_generative_params(self, temperature = 1.0, top_k = None, top_p = None, repeat_penalty = 1.0, repetition_n = 10):
         self.inner_conf.temperature = temperature
         self.inner_conf.top_k = top_k
         self.inner_conf.top_p = top_p
@@ -148,12 +150,33 @@ class Block(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, config: InnerConf, device: str, tokenizer_path: str):
+    def __init__(self, model: str, config: InnerConf, device: str, tokenizer_path: str | None = None, tokenizer_into_model_folder: bool = False):        
+        """
+        Transformer model class
+
+        :param config: Config for the model
+        :param device: Device for the model
+        :param tokenizer_path: Path for the tokenizer.json file
+        :param tokenizer_into_model_folder: Copy tokenizer to the model folder. Warning, tokenizer in the model folder have bigger priority than tokenizer parameter.
+        :returns: Transformer object ready for forward pass
+        """
         super().__init__()
         self.config = config
 
         self.device = device
 
+        self.model = model
+        self.local_tokenizer_path = f"./models/{model}/tokenizer.json"
+        if os.path.exists(self.local_tokenizer_path):
+            print("Tokenizer override to local tokenizer...")
+            tokenizer_path = self.local_tokenizer_path
+        else:
+            if not tokenizer_path:
+                raise FileNotFoundError("No tokenizer file and no tokenizer parameter")
+            elif tokenizer_into_model_folder:
+                os.makedirs(f"./models/{model}", exist_ok=True)
+                shutil.copy(tokenizer_path, self.local_tokenizer_path)
+                tokenizer_path = self.local_tokenizer_path
         self.tokenizer = Tokenizer.from_file(tokenizer_path)
         self.vocab_size = self.tokenizer.get_vocab_size()
 
@@ -171,7 +194,7 @@ class Transformer(nn.Module):
         x = self.token_emb(idx) + self.pos_emb(torch.arange(T, device=self.device))
         x = self.dropout(x)
         for block in self.blocks:
-            x = checkpoint(block, x, use_reentrant=False) if self.training else block(x)
+            x = block(x)
 
         x = self.ln(x)
         logits = self.lm_head(x)
@@ -221,18 +244,29 @@ class Transformer(nn.Module):
                 break
             print(self.tokenizer.decode(idx_next.tolist()), end="")
     
-    def load(self, model):
-        model_path = f"./models/{model}/{model}.pth"
-        with open(model_path, "rb") as w:
-            self.load_state_dict(torch.load(w))
+    def load(self, from_model: str | None = None):
+        if from_model and not os.path.exists(f"./models/{self.model}/{self.model}.pth"):
+            print("Loading weights from existing model")
+            model_path = f"./models/{from_model}/{from_model}.pth"
+        else:
+            print("Loading original model weights")
+            model_path = f"./models/{self.model}/{self.model}.pth"
+        try:
+            with open(model_path, "rb") as w:
+                self.load_state_dict(torch.load(w))
+            return True
+        except FileNotFoundError:
+            return False
     
-    def save(self, model):
-        model_path = f"./models/{model}/{model}.pth"
+    def save(self):
+        model_path = f"./models/{self.model}/{self.model}.pth"
         backup_path =  model_path + ".backup"
         try:
-            os.rename(model_path, backup_path)
+            os.replace(model_path, backup_path)
         except FileNotFoundError:
             pass
         with open(model_path, "wb") as w:
             torch.save(self.state_dict(), w)
 
+    def get_tokenizer(self):
+        return self.tokenizer
