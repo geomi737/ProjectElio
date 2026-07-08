@@ -1,5 +1,5 @@
 from tokenizers import ByteLevelBPETokenizer
-from transformer import eot_token
+from architecture import eot_token
 
 tokenizer = ByteLevelBPETokenizer()
 
