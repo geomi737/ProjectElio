@@ -36,8 +36,8 @@ class TextDataset(Dataset):
 # Parameters
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model_name = "Elio-1.1I"
-from_model = "Elio-1.1R"
+model_name = "Elio-1.0I"
+from_model = "Elio-1.0R"
 
 dataset_path = "dataset/ru_turbo_alpaca.jsonl"
 with open(dataset_path, "r") as d:

@@ -39,8 +39,9 @@ class Trainer:
         self.model_path = f"./models/{self.model_name}"
         self.train_file_path = self.model_path + "/optimizer.pth"
         self.optimizer = optim.AdamW8bit(self.model.parameters(), self.learning_rate, weight_decay=self.weight_decay)
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, self.learning_rate, total_steps=(self.epochs * len(self.training_dataloader)) // self.accumulation, pct_start=self.pct_start)
-    
+        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, self.learning_rate, total_steps=len(self.training_dataloader), pct_start=self.pct_start)
+        self.scaler = torch.GradScaler(device)
+        
     def calculate_loss(self, loss_type):
         if not loss_type:
             result = sum(self.losses) / len(self.losses)
@@ -75,7 +76,11 @@ class Trainer:
                 "starting_point": step,
                 "rng_state": torch.get_rng_state(),
                 "optimizer": self.optimizer.state_dict(),
-                "scheduler": self.scheduler.state_dict()
+                "scheduler": self.scheduler.state_dict(),
+                "global_train_losses": self.global_train_losses,
+                "global_val_losses": self.global_val_losses,
+                "mean_train_losses": self.mean_train_losses,
+                "mean_val_losses": self.mean_val_losses
                 }
             try:
                 os.replace(self.train_file_path, self.train_file_path + ".backup")
@@ -100,6 +105,10 @@ class Trainer:
                 torch.set_rng_state(checkpoint["rng_state"])
                 self.optimizer.load_state_dict(checkpoint["optimizer"])
                 self.scheduler.load_state_dict(checkpoint["scheduler"])
+                self.global_train_losses = checkpoint["global_train_losses"]
+                self.global_val_losses = checkpoint["global_val_losses"]
+                self.mean_train_losses = checkpoint["mean_train_losses"]
+                self.mean_val_losses = checkpoint["mean_val_losses"]
         except Exception as e:
             if isinstance(e, FileNotFoundError):
                 print("Optimizer not found, clean training sequence initiated")
@@ -127,17 +136,21 @@ class Trainer:
                     idx, target = idxtrg
                     idx, target = idx.long().to(device), target.long().to(device)
                     
-                    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    with torch.autocast(device_type=device, dtype=torch.float16):
                         logits, loss = self.compiled_model(idx, target)
                     self.global_train_losses.append(loss.item())
                     self.losses.append(loss.item())
                     loss = loss / self.accumulation
-                    loss.backward()
+                    self.scaler.scale(loss).backward()
 
                     if step % self.accumulation == 0:
-                        self.optimizer.step()
-                        self.scheduler.step()
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
                         self.optimizer.zero_grad()
+                        self.scheduler.step()
+
 
                     if step % (self.accumulation + 1) == 0:
                         pbar.set_description_str(f"Training / Epoch: {epoch} / Loss: {self.calculate_loss(0):.2f}")
@@ -155,7 +168,7 @@ class Trainer:
                     val, target = valtrg
                     val, target = val.long().to(device), target.long().to(device)
 
-                    with torch.autocast(device_type=device, dtype=torch.bfloat16), torch.no_grad():
+                    with torch.autocast(device_type=device, dtype=torch.float16), torch.no_grad():
                         logits, loss = self.compiled_model(val, target)
                     self.global_val_losses.append(loss.item())
                     self.val_losses.append(loss.item())

@@ -24,7 +24,7 @@ class TextDataset(Dataset):
 # Parameters
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model_name = "Elio-1.0R"
+model_name = "Elio-2.1R"
 
 dataset_path = "dataset/f-t-32k_ru_wikipedia.dtst"
 dataset = np.memmap(dataset_path, dtype=np.uint16, mode="r+")
@@ -36,19 +36,19 @@ batch = 128
 epochs = 5
 learning_rate = 5e-4
 weight_decay = 1e-2
-accumulation = 1
+accumulation = 2
 pct_start = 0.05
 
 # Model Parameters
-context = 256
+context = 64
 
 modelconf = ModelConfig(model_name).create_new(
     eot_token=eot_token,
     dropout=0.1,
     context=context,
-    embed_dims=64,
-    attention_heads=1,
-    n_blocks=1,
+    embed_dims=512,
+    attention_heads=8,
+    n_blocks=12,
 )
 modelconf.save_model_layout()
 model = Transformer(model_name, modelconf.get_settings(), device, tokenizer_path="tokenizer.json", tokenizer_into_model_folder=True).to(device)

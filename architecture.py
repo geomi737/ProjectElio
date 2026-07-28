@@ -61,6 +61,7 @@ class ModelConfig:
     def save_model_layout(self, to_model: str | None = None):
         if to_model:
             self.layout_path = f"./models/{to_model}/{to_model}-layout.json"
+            os.makedirs(f"./models/{to_model}/", exist_ok=True)
         if not self.inner_conf:
             print("No model data found, skip saving...")
             return False
@@ -91,15 +92,18 @@ class MLP(nn.Module):
         super().__init__()
         self.config = config
 
-        self.mlp = nn.Sequential(
-            nn.Linear(config.embed_dims, 4 * config.embed_dims),
-            nn.GELU(),
-            nn.Linear(4 * config.embed_dims, config.embed_dims),
-            nn.Dropout(config.dropout),
-        )
+        self.inlayer = nn.Linear(config.embed_dims, int(8 / 3 * config.embed_dims), bias=False)
+        self.gate = nn.Linear(config.embed_dims, int(8 / 3 * config.embed_dims), bias=False)
+        self.activation = nn.SiLU()
+        self.outlayer = nn.Linear(int(8 / 3 * config.embed_dims), config.embed_dims, bias=False)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        return self.mlp(x)
+        approved = self.activation(self.gate(x))
+        improved = self.inlayer(x)
+        logits = self.outlayer(approved * improved)
+        logits = self.dropout(logits)
+        return logits
 
 
 class MultiHeadAttention(nn.Module):
@@ -138,8 +142,8 @@ class Block(nn.Module):
 
         self.heads = MultiHeadAttention(config)
         self.mlp = MLP(config)
-        self.ln1 = nn.LayerNorm(config.embed_dims)
-        self.ln2 = nn.LayerNorm(config.embed_dims)
+        self.ln1 = nn.RMSNorm(config.embed_dims)
+        self.ln2 = nn.RMSNorm(config.embed_dims)
 
     def forward(self, x):
         xnorm = self.ln1(x)
@@ -186,9 +190,10 @@ class Transformer(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
 
         self.blocks = nn.ModuleList(Block(config) for _ in range(config.n_blocks))
-        self.ln = nn.LayerNorm(config.embed_dims)
-        self.lm_head = nn.Linear(config.embed_dims, self.vocab_size)
-
+        self.ln = nn.RMSNorm(config.embed_dims)
+        self.lm_head = nn.Linear(config.embed_dims, self.vocab_size, bias=False)
+        # self.lm_head.weight = self.token_emb.weight
+        
     def forward(self, idx, target=None):
         T = idx.shape[-1]
         x = self.token_emb(idx) + self.pos_emb(torch.arange(T, device=self.device))
@@ -209,8 +214,6 @@ class Transformer(nn.Module):
     def generate(self, idx, token_amount, penalty_queue = None):
         if not penalty_queue:
             penalty_queue = deque([], self.config.repetition_n)
-        if isinstance(idx, str):
-            idx = torch.tensor([self.tokenizer.encode(idx).ids + self.tokenizer.encode(self.config.eot_token).ids]).long().to(self.device)
         if len(idx.shape) < 2:
             idx = idx.unsqueeze(0).to(self.device)
 
