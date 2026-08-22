@@ -9,6 +9,7 @@ from torch.utils.checkpoint import checkpoint
 from collections import deque
 import shutil
 
+
 @dataclass
 class InnerConf:
     dropout: float
@@ -24,12 +25,25 @@ class InnerConf:
     temperature: float
     repeat_penalty: float
 
+
 class ModelConfig:
     def __init__(self, model):
         self.model_path = f"./models/{model}"
         self.layout_path = self.model_path + f"/{model}-layout.json"
-    
-    def create_new(self, eot_token, dropout, context, embed_dims, attention_heads, n_blocks, temperature = 1.0, top_k = None, top_p = None, repeat_penalty = 1.0, repetition_n = 10):
+
+    def create_new(
+            self,
+            eot_token,
+            dropout,
+            context,
+            embed_dims,
+            attention_heads,
+            n_blocks,
+            temperature=1.0,
+            top_k=None,
+            top_p=None,
+            repeat_penalty=1.0,
+            repetition_n=10):
         if os.path.exists(self.layout_path):
             print("Layout exists, using already created layout. Change model name for new model.")
             return self.load_model_layout()
@@ -50,7 +64,7 @@ class ModelConfig:
         )
         return self
 
-    def load_model_layout(self):    
+    def load_model_layout(self):
         with open(self.layout_path, mode="r") as f:
             checkpoint = json.load(f)
 
@@ -72,20 +86,21 @@ class ModelConfig:
             return False
         with open(self.layout_path, mode="w") as f:
             json.dump(asdict(self.inner_conf), f, ensure_ascii=False, indent=4)
-        
+
         return self
 
-    def change_generative_params(self, temperature = 1.0, top_k = None, top_p = None, repeat_penalty = 1.0, repetition_n = 10):
+    def change_generative_params(self, temperature=1.0, top_k=None, top_p=None, repeat_penalty=1.0, repetition_n=10):
         self.inner_conf.temperature = temperature
         self.inner_conf.top_k = top_k
         self.inner_conf.top_p = top_p
         self.inner_conf.repeat_penalty = repeat_penalty
-        self.inner_conf.repetition_n = repetition_n 
+        self.inner_conf.repetition_n = repetition_n
 
         return self
 
     def get_settings(self):
         return self.inner_conf
+
 
 class MLP(nn.Module):
     def __init__(self, config: InnerConf):
@@ -154,7 +169,13 @@ class Block(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, model: str, config: InnerConf, device: str, tokenizer_path: str | None = None, tokenizer_into_model_folder: bool = False):        
+    def __init__(
+            self,
+            model: str,
+            config: InnerConf,
+            device: str,
+            tokenizer_path: str | None = None,
+            tokenizer_into_model_folder: bool = False):
         """
         Transformer model class
 
@@ -185,6 +206,7 @@ class Transformer(nn.Module):
         self.vocab_size = self.tokenizer.get_vocab_size()
 
         self.token_emb = nn.Embedding(self.vocab_size, config.embed_dims)
+        nn.init.normal_(self.token_emb.weight, mean=0.0, std=0.02)
         self.pos_emb = nn.Embedding(config.context, config.embed_dims)
 
         self.dropout = nn.Dropout(config.dropout)
@@ -192,8 +214,8 @@ class Transformer(nn.Module):
         self.blocks = nn.ModuleList(Block(config) for _ in range(config.n_blocks))
         self.ln = nn.RMSNorm(config.embed_dims)
         self.lm_head = nn.Linear(config.embed_dims, self.vocab_size, bias=False)
-        # self.lm_head.weight = self.token_emb.weight
-        
+        self.lm_head.weight = self.token_emb.weight
+
     def forward(self, idx, target=None):
         T = idx.shape[-1]
         x = self.token_emb(idx) + self.pos_emb(torch.arange(T, device=self.device))
@@ -211,7 +233,7 @@ class Transformer(nn.Module):
 
         return logits, loss
 
-    def generate(self, idx, token_amount, penalty_queue = None):
+    def generate(self, idx, token_amount, penalty_queue=None):
         if not penalty_queue:
             penalty_queue = deque([], self.config.repetition_n)
         if len(idx.shape) < 2:
@@ -224,7 +246,12 @@ class Transformer(nn.Module):
 
             tensor_penalty = torch.tensor(penalty_queue).to(self.device).long()
             target_logits = logits[tensor_penalty]
-            shifted_logits = torch.where(target_logits > 0, target_logits / self.config.repeat_penalty, target_logits * self.config.repeat_penalty)
+            shifted_logits = torch.where(
+                target_logits > 0,
+                target_logits /
+                self.config.repeat_penalty,
+                target_logits *
+                self.config.repeat_penalty)
             logits[tensor_penalty] = shifted_logits
 
             if self.config.top_k:
@@ -246,7 +273,7 @@ class Transformer(nn.Module):
             if idx_next.tolist() == self.tokenizer.encode(self.config.eot_token).ids:
                 break
             print(self.tokenizer.decode(idx_next.tolist()), end="")
-    
+
     def load(self, from_model: str | None = None):
         if from_model and not os.path.exists(f"./models/{self.model}/{self.model}.pth"):
             print("Loading weights from existing model")
@@ -260,10 +287,10 @@ class Transformer(nn.Module):
             return True
         except FileNotFoundError:
             return False
-    
+
     def save(self):
         model_path = f"./models/{self.model}/{self.model}.pth"
-        backup_path =  model_path + ".backup"
+        backup_path = model_path + ".backup"
         try:
             os.replace(model_path, backup_path)
         except FileNotFoundError:

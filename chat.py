@@ -3,16 +3,16 @@ from architecture import ModelConfig, Transformer
 from tokenizers import Tokenizer
 from traintokenizer import eot_token, user_text_token, answer_token
 
-model_name = "Elio-2.0R"
+model_name = "Elio-1.0I"
 model_path = f"./models/{model_name}/{model_name}.pth"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 modelconfig = ModelConfig(model_name).load_model_layout()
 modelconfig.change_generative_params(
-    temperature=0.3, top_k=30, top_p=0.85, repeat_penalty=1.0
+    temperature=0.7, top_k=40, top_p=0.9, repeat_penalty=1.15, repetition_n=20
 )
 model = Transformer(model_name, modelconfig.get_settings(), device).to(device)
-model_type = "R"
+model_type = "I"
 
 tokenizer = model.get_tokenizer()
 
